@@ -208,7 +208,7 @@ contains
                                    ! above the leaf layer of interest
     real(r8) :: lai_current        ! the LAI in the current leaf layer
     real(r8) :: cumulative_lai     ! the cumulative LAI, top down, to the leaf layer of interest
-
+    real(r8) :: psi_leaf           ! xylem water potential of leaf
     real(r8), allocatable :: rootfr_ft(:,:)  ! Root fractions per depth and PFT
 
     ! -----------------------------------------------------------------------------------
@@ -395,7 +395,7 @@ contains
                                  (hlm_parteh_mode .ne. prt_carbon_allom_hyp )   ) then
                                
                                if (hlm_use_planthydro.eq.itrue ) then
-                                   
+                                 psi_leaf = currentCohort%co_hydr%psi_ag(1) 
                                  bbb = max( cf/rsmax0, bbbopt(nint(c3psn(ft)))*currentCohort%co_hydr%btran ) 
                                  btran_eff = currentCohort%co_hydr%btran
                                  
@@ -517,7 +517,9 @@ contains
                                                         bc_in(s)%forc_pbot,                 &  ! in
                                                         bc_in(s)%cair_pa(ifp),              &  ! in
                                                         bc_in(s)%oair_pa(ifp),              &  ! in
+                                                        bc_in(s)%rb_pa(ifp),                &  ! in                                                        
                                                         btran_eff,                          &  ! in
+                                                        psi_leaf,                           &  ! in                                                        
                                                         bbb,                                &  ! in
                                                         cf,                                 &  ! in
                                                         gb_mol,                             &  ! in
@@ -821,7 +823,9 @@ contains
                                      can_press,         &  ! in
                                      can_co2_ppress,    &  ! in
                                      can_o2_ppress,     &  ! in
+                                     rb,                &  ! in
                                      btran,             &  ! in
+                                     psi,               &  ! in                                     
                                      bbb,               &  ! in
                                      cf,                &  ! in
                                      gb_mol,            &  ! in
@@ -922,12 +926,23 @@ contains
 
    real(r8), dimension(0:1) :: bbbopt ! Cuticular conductance at full water potential (umol H2O /m2/s)
 
-
-
+   real(r8) :: psi               ! Xylem Water potential of leaf                 
+   real(r8) :: gstoma_out        ! Adjusted stoma conductance that incorporates the leaf water status
+   real(r8) :: qs                ! specific humidity at leaf surface
+   real(r8) :: qsat              ! saturated specific humidity 
+   real(r8) :: qsat_adj          ! specific humidity adjusted by leaf water potential    (g/kg)
+   real(r8) :: veg_esat_adj      ! vapor pressure adjusted by leaf water potential       ()         
+   real(r8) :: LWP_star          ! leaf water potential scaling coefficient for inner leaf humidity
+   real(r8) :: k_lwp = 8.0_r8    ! an sclaing coefficient for the ratio of leaf xylem water potential to mesophyll water potential                     
+   real(r8) :: th_sat            ! saturated water content of leaf m3/m3
+   real(r8) :: th_rs             ! residual waater content of leaf m3/m3
+   real(r8) :: rb                ! leaf boundary layer ressistance  
    ! Parameters
    ! ------------------------------------------------------------------------
    ! Fraction of light absorbed by non-photosynthetic pigments
    real(r8),parameter :: fnps = 0.15_r8       
+
+
 
    ! For plants with no leaves, a miniscule amount of conductance
    ! can happen through the stems, at a partial rate of cuticular conductance
@@ -1087,28 +1102,34 @@ contains
                  call quadratic_f (aquad, bquad, cquad, r1, r2)
                  agross = min(r1,r2)
 
-                 ! Net carbon assimilation. Exit iteration if an < 0
-                 anet = agross  - lmr
-                 if (anet < 0._r8) then
-                    loop_continue = .false.
-                 end if
+
+                !!! Junyan replace anet in the belowing code to agross for gs calculation
+                !!! this is version B  
+                 anet = agross - lmr
+                 ! if (anet < 0._r8) then
+                  !  loop_continue = .false.
+                 ! end if
+
 
                  ! Quadratic gs_mol calculation with an known. Valid for an >= 0.
                  ! With an <= 0, then gs_mol = bbb
                  
-                 leaf_co2_ppress = can_co2_ppress- 1.4_r8/gb_mol * anet * can_press 
+                 leaf_co2_ppress = can_co2_ppress- 1.4_r8/gb_mol * agross * can_press 
                  leaf_co2_ppress = max(leaf_co2_ppress,1.e-06_r8)
                  aquad = leaf_co2_ppress
-                 bquad = leaf_co2_ppress*(gb_mol - bbb) - bb_slope(ft) * anet * can_press
+                 bquad = leaf_co2_ppress*(gb_mol - bbb) - bb_slope(ft) * agross * can_press
                  cquad = -gb_mol*(leaf_co2_ppress*bbb + &
-                                  bb_slope(ft)*anet*can_press * ceair/ veg_esat )
+                                  bb_slope(ft)*agross*can_press* ceair/veg_esat)   
+                                  !     bb_slope(ft)*agross*can_press )  ! Junyan Dec 12 Vd
 
                  call quadratic_f (aquad, bquad, cquad, r1, r2)
                  gs_mol = max(r1,r2)
                  
                  ! Derive new estimate for co2_inter_c
-                 co2_inter_c = can_co2_ppress - anet * can_press * &
+                 co2_inter_c = can_co2_ppress - agross * can_press * &
                        (1.4_r8*gs_mol+1.6_r8*gb_mol) / (gb_mol*gs_mol)
+                ! end of Junyan's change for gs calculation
+
 
                  ! Check for co2_inter_c convergence. Delta co2_inter_c/pair = mol/mol. 
                  ! Multiply by 10**6 to convert to umol/mol (ppm). Exit iteration if 
@@ -1122,15 +1143,15 @@ contains
               end do !iteration loop
               
               ! End of co2_inter_c iteration.  Check for an < 0, in which case gs_mol = bbb
-              if (anet < 0._r8) then
+              if (agross < 0._r8) then
                  gs_mol = bbb
               end if
               
               ! Final estimates for leaf_co2_ppress and co2_inter_c 
               ! (needed for early exit of co2_inter_c iteration when an < 0)
-              leaf_co2_ppress = can_co2_ppress - 1.4_r8/gb_mol * anet * can_press
+              leaf_co2_ppress = can_co2_ppress - 1.4_r8/gb_mol * agross * can_press
               leaf_co2_ppress = max(leaf_co2_ppress,1.e-06_r8)
-              co2_inter_c = can_co2_ppress - anet * can_press * &
+              co2_inter_c = can_co2_ppress - agross * can_press * &
                             (1.4_r8*gs_mol+1.6_r8*gb_mol) / (gb_mol*gs_mol)
               
               ! Convert gs_mol (umol /m**2/s) to gs (m/s) and then to rs (s/m)
@@ -1169,7 +1190,7 @@ contains
               
               ! Compare with Ball-Berry model: gs_mol = m * an * hs/leaf_co2_ppress p + b
               hs = (gb_mol*ceair + gs_mol* veg_esat ) / ((gb_mol+gs_mol)*veg_esat )
-              gs_mol_err = bb_slope(ft)*max(anet, 0._r8)*hs/leaf_co2_ppress*can_press + bbb
+              gs_mol_err = bb_slope(ft)*max(agross, 0._r8)*hs/leaf_co2_ppress*can_press + bbb
               
               if (abs(gs_mol-gs_mol_err) > 1.e-01_r8) then
                  write (fates_log(),*) 'CF: Ball-Berry error check - stomatal conductance error:'
@@ -1178,9 +1199,68 @@ contains
               
            enddo !sunsha loop
 
-           ! This is the stomatal resistance of the leaf layer
-           rstoma_out = 1._r8/gstoma
-	   
+            ! This is the stomatal resistance of the leaf layer of a given cohort
+
+            ! Junyan addition to correct the gs
+            ! compute specific humidity from vapor pressure
+            ! q = 0.622*e/(can_press - 0.378*e) 
+            ! source https://cran.r-project.org/web/packages/humidity/vignettes/humidity-measures.html
+
+           if (hlm_use_planthydro.eq.itrue) then
+
+             !Calculates inner leaf humidity as a function of mesophyll water potential 
+             ! Adopted from  Vesala et la., 2017 https://www.frontiersin.org/articles/10.3389/fpls.2017.00054/full
+             ! LWP_star = wi/w0 = exp(psi_meso*Vh20/(R*T)) , w is the water vapor concentration 
+             ! Vh20:  molar volume of water (18 × 10−6 m3 mol−1) 
+             ! R is the universal gas constant and T the interfacial temperature 
+             ! 
+             ! th_sat = EDPftvarcon_inst%hydr_thetas_node(ft,1)
+             ! th_rs = EDPftvarcon_inst%hydr_resid_node(ft,1)
+             
+             k_lwp = EDPftvarcon_inst%hydr_k_lwp(ft)
+             if (psi<0) then
+               LWP_star = exp(((k_lwp) * psi)*18.0_r8/(8.314_r8*veg_tempk))
+               ! k_lwp**btran
+             else 
+               LWP_star = 1
+             end if
+             ! now adjust veg_esat by LWP_star
+             veg_esat_adj = veg_esat*LWP_star
+
+             ! note: q is the specific humidity
+             qs = 0.622 * ceair / (can_press - 0.378 * ceair)
+             qsat = 0.622 * veg_esat / (can_press - 0.378 * veg_esat)
+             ! qsat_adj = 0.622 * veg_esat_adj / (can_press - 0.378 * veg_esat_adj)
+             qsat_adj = qsat*LWP_star
+             
+             !  write (fates_log(),*) 'qsat:', qsat, 'RHleaf:', qsat_adj/qsat, 'RHs:', qs/qsat
+             if (k_lwp == 0 ) then 
+               rstoma_out = 1._r8/gstoma
+             else 
+               if ((qsat_adj - qs) <= 0) then
+               !  write (fates_log(),*) 'LWP_star:', LWP_star
+               !  write (fates_log(),*) 'qleaf:', qsat * LWP_star, 'qs',qs               
+                 ! if inner leaf vapor pressure is less then or equal to that at leaf surface
+                 ! then set stomata resistance to be very large to stop the transpiration or back flow of vapor
+                  rstoma_out = rsmax0*100
+               else
+                  rstoma_out = (qsat-qs)*( 1/gstoma + rb)/(qsat_adj - qs)-rb
+                
+               end if
+               if (rstoma_out <=0 ) then
+               !  write (fates_log(),*) 'code line 1244'
+               !  write (fates_log(),*) 'qsat:', qsat, 'qs:', qs
+               !  write (fates_log(),*) 'LWP :', psi, 'BTRAN:', th_rs, 'th:', th
+               !  write (fates_log(),*)  'ceair:', ceair, 'veg_esat:', veg_esat            
+               !  write (fates_log(),*) 'rstoma_out:', rstoma_out, 'rb:', rb  
+               !  write (fates_log(),*)  'LWP_star', LWP_star 
+               !  call endrun(msg=errMsg(sourcefile, __LINE__))                  
+               end if      
+             end if  ! k_lwp == 0
+            else 
+              rstoma_out = 1._r8/gstoma
+            end if
+	         ! end of Junyan modification
         else
 
            ! No leaf area. This layer is present only because of stems. 
@@ -1210,7 +1290,7 @@ contains
                                         lmr_llz,     & ! in   lmr_z(1:currentCohort%nv,ft,cl)
                                         rs_llz,      & ! in   rs_z(1:currentCohort%nv,ft,cl)
                                         elai_llz,    & ! in   %elai_profile(cl,ft,1:currentCohort%nv)
-					c13disc_llz, & ! in   c13disc_z(cl, ft, 1:currentCohort%nv)
+					                         c13disc_llz, & ! in   c13disc_z(cl, ft, 1:currentCohort%nv)
                                         c_area,      & ! in   currentCohort%c_area
                                         nplant,      & ! in   currentCohort%n
                                         rb,          & ! in   bc_in(s)%rb_pa(ifp)
@@ -1218,7 +1298,7 @@ contains
                                         g_sb_laweight, & ! out  currentCohort%g_sb_laweight [m/s] [m2-leaf]
                                         gpp,         &   ! out  currentCohort%gpp_tstep
                                         rdark,       &   ! out  currentCohort%rdark
-					c13disc_clm, &   ! out currentCohort%c13disc_clm
+					                         c13disc_clm, &   ! out currentCohort%c13disc_clm
                                         cohort_eleaf_area ) ! out [m2]
    
     ! ------------------------------------------------------------------------------------
@@ -1259,7 +1339,7 @@ contains
     real(r8) :: cohort_layer_eleaf_area  ! the effective leaf area of the cohort's current layer [m2]
     
     cohort_eleaf_area = 0.0_r8
-    g_sb_laweight             = 0.0_r8
+    g_sb_laweight      = 0.0_r8
     gpp               = 0.0_r8
     rdark             = 0.0_r8
 
@@ -1643,7 +1723,7 @@ contains
       
       real(r8), parameter :: mm_kc25_umol_per_mol       = 404.9_r8
       real(r8), parameter :: mm_ko25_mmol_per_mol       = 278.4_r8
-      real(r8), parameter :: co2_cpoint_umol_per_mol    = 42.75_r8
+      real(r8), parameter :: co2_cpoint_umol_per_mol    = 42.75_r8  !Junyan changed 42.75_r8 to 85
       
       ! Activation energy, from:
       ! Bernacchi et al (2001) Plant, Cell and Environment 24:253-259

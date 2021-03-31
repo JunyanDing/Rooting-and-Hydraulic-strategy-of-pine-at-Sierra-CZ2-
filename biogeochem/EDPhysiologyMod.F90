@@ -116,7 +116,7 @@ module EDPhysiologyMod
   public :: PreDisturbanceIntegrateLitter  
   public :: SeedIn
   
-  logical, parameter :: debug  = .false. ! local debug flag
+  logical, parameter :: debug  = .true. ! local debug flag
   character(len=*), parameter, private :: sourcefile = &
         __FILE__
 

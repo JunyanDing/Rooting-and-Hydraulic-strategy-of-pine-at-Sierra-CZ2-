@@ -108,6 +108,8 @@ module EDMainMod
 
   integer, parameter :: final_check_id = -1
   
+  integer :: debug_JD = 1                                              ! Junyan set to disable endrun
+  
   character(len=*), parameter, private :: sourcefile = &
          __FILE__
   
@@ -711,7 +713,9 @@ contains
                 currentPatch => currentPatch%younger
              enddo !end patch loop
              write(fates_log(),*) 'aborting on date:',hlm_current_year,hlm_current_month,hlm_current_day
-             call endrun(msg=errMsg(sourcefile, __LINE__))
+             if (debug_JD < 0) then
+                 call endrun(msg=errMsg(sourcefile, __LINE__))
+             end if
          !end if
           
       endif
